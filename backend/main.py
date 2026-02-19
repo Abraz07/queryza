@@ -156,7 +156,7 @@ Dataset summary:
 Rules:
 - df is already loaded. Never reload it.
 - Use only pd, px, go. No matplotlib. No other imports.
-- Always assign the final computed answer to a variable called result.
+- Always assign the final computed answer to a variable called result. NEVER use print(). NEVER leave result as None.
 - For charts: assign to fig using px or go with template=plotly_dark and color_discrete_sequence=["#00e5ff"].
 - When creating bar charts, always use value_counts() for categorical columns.
 - Always wrap code in ```python``` blocks.
@@ -188,8 +188,13 @@ Rules:
     if exec_error:
         return QueryResponse(answer=explanation, code=code, error=f"Execution error: {exec_error}")
 
-    # Build answer using ACTUAL computed result, not AI's guess
-    answer = build_final_answer(explanation, result, request.question)
+    # If result was converted to a table or chart, say so simply
+    if result is None and table_data is not None:
+        answer = "Here's what I found:"
+    elif result is None and chart_json is not None:
+        answer = "Here's the chart:"
+    else:
+        answer = build_final_answer(explanation, result, request.question)
 
     return QueryResponse(answer=answer, code=code, chart=chart_json, table=table_data)
 

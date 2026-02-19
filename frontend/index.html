@@ -397,7 +397,6 @@ function Message({ msg, theme }) {
         {msg.chart && <div className="chart-wrap"><PlotlyChart data={msg.chart} theme={theme} /></div>}
         {msg.table && <DataTable table={msg.table} />}
         {msg.error && <div className="error-box">⚠ {msg.error}</div>}
-        {msg.code && <CodeBlock code={msg.code} />}
       </div>
     </div>
   );
@@ -562,7 +561,7 @@ function App() {
                 onDragLeave={() => setDragOver(false)}
                 onDrop={e => { e.preventDefault(); setDragOver(false); handleFile(e.dataTransfer.files[0]); }}>
                 <input type="file" accept=".csv,.xlsx,.xls" onChange={e => handleFile(e.target.files[0])} />
-                <div className="empty-upload-text">{uploading ? '⏳ Uploading...' : '📊 Click or drop your file here → <span>Get started free</span>'}</div>
+                <div className="empty-upload-text">{uploading ? '⏳ Uploading...' : '📊 Click or drop your file here — Get started free'}</div>
               </div>
             </div>
           ) : (
