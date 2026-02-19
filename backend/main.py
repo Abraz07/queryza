@@ -2,6 +2,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import pandas as pd
+import numpy as np
 import json, io, re, uuid, os
 from google import genai
 import plotly.express as px
@@ -64,6 +65,14 @@ def safe_execute(code, df):
     elif isinstance(result, pd.Series):
         table_data = {"columns": [result.name or "value"], "rows": [[v] for v in result.head(100).values.tolist()]}
         result = None
+    elif isinstance(result, (list, tuple)) and len(result) >= 2:
+        # Convert list with 2+ items to a table
+        table_data = {"columns": ["value"], "rows": [[str(v)] for v in result[:100]]}
+        result = None
+    elif isinstance(result, dict) and len(result) >= 2:
+        # Convert dict with 2+ keys to a table
+        table_data = {"columns": ["column", "value"], "rows": [[str(k), str(v)] for k, v in list(result.items())[:100]]}
+        result = None
     return result, chart_json, table_data, None
 
 def build_final_answer(explanation, result, question):
@@ -75,7 +84,8 @@ def build_final_answer(explanation, result, question):
     if result is None:
         return explanation
 
-    if isinstance(result, (int, float)):
+    if isinstance(result, (int, float, np.integer, np.floating)):
+        result = float(result) if isinstance(result, (np.floating, float)) else int(result)
         formatted = f"{result:,}" if isinstance(result, int) else f"{result:,.2f}"
         q = question.lower()
         # Build a natural answer based on the question type
@@ -96,11 +106,21 @@ def build_final_answer(explanation, result, question):
         else:
             return f"The answer is {formatted}."
 
+    # For dicts — handle specially
+    if isinstance(result, dict):
+        if 'column_names' in result:
+            cols = result['column_names']
+            dtypes = result.get('column_dtypes', {})
+            lines = ", ".join([f"{c} ({str(dtypes.get(c, 'unknown')).replace('dtype(', '').replace(')', '').replace(chr(39), '')})" for c in cols])
+            return f"Your dataset has {len(cols)} columns: {lines}"
+        return explanation
+
     # For lists/arrays, show them cleanly
     if hasattr(result, "__iter__") and not isinstance(result, str):
         items = list(result)
         clean = ", ".join(str(i) for i in items)
         return f"The values are: {clean}"
+
     # For strings
     return f"{explanation} {result}"
 

@@ -320,23 +320,13 @@ function PlotlyChart({ data }) {
   const ref = useRef();
   useEffect(() => {
     if (!ref.current || !data) return;
-    const coloredData = data.data.map(trace => ({
-        ...trace,
-        marker: { 
-          ...((trace.marker) || {}),
-          color: trace.marker?.color || '#00e5ff',
-          line: { color: '#00e5ff', width: 1 }
-        },
-        line: { ...((trace.line) || {}), color: trace.line?.color || '#00e5ff' }
-      }));
-      Plotly.newPlot(ref.current, coloredData, {
-        ...data.layout,
-        paper_bgcolor: 'rgba(0,0,0,0)',
-        plot_bgcolor: 'rgba(13,17,23,0.8)',
-        font: { family: 'Syne, sans-serif', color: '#8b949e' },
-        margin: { t: 40, r: 20, b: 60, l: 60 },
-        colorway: ['#00e5ff', '#7c3aed', '#10b981', '#f59e0b', '#ef4444'],
-      }, { responsive: true, displayModeBar: false });
+    Plotly.newPlot(ref.current, data.data, {
+      ...data.layout,
+      paper_bgcolor: 'rgba(0,0,0,0)',
+      plot_bgcolor: 'rgba(0,0,0,0)',
+      font: { family: 'Syne, sans-serif', color: '#8b949e' },
+      margin: { t: 40, r: 20, b: 60, l: 60 },
+    }, { responsive: true, displayModeBar: false });
     return () => Plotly.purge(ref.current);
   }, [data]);
   return <div ref={ref} className="chart-inner" />;
@@ -468,6 +458,13 @@ function App() {
     }
   };
 
+  const clearChat = () => {
+    setMessages([]);
+    if (session) {
+      fetch(`${API}/session/${session.session_id}`, { method: 'DELETE' });
+    }
+  };
+
   const onKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
   };
@@ -480,11 +477,11 @@ function App() {
   };
 
   const suggestions = session ? [
-    `What are the column names and their data types?`,
-    `Show me a summary of all numeric columns`,
-    `Which row has the highest value in ${session.column_names[1] || 'the second column'}?`,
-    `Show me a bar chart of ${session.column_names[0] || 'the first column'}`,
-    `Are there any missing values? Show me which columns.`,
+    'What are the column names and their data types?',
+    'How many rows are in this dataset?',
+    'How many columns are in this dataset?',
+    'Show me a summary of all numeric columns',
+    'Show me a bar chart of the data',
   ] : [];
 
   return (
@@ -546,7 +543,14 @@ function App() {
           {/* Suggestions */}
           {session && (
             <div className="sidebar-section">
-              <div className="sidebar-label">💡 Try asking</div>
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'12px'}}>
+                <div className="sidebar-label" style={{margin:0}}>💡 Try asking</div>
+                <button onClick={clearChat} style={{
+                  background:'rgba(248,81,73,0.1)', border:'1px solid rgba(248,81,73,0.3)',
+                  borderRadius:'6px', color:'#f85149', fontSize:'11px', cursor:'pointer',
+                  padding:'3px 10px', fontFamily:'JetBrains Mono, monospace'
+                }}>🗑 Clear chat</button>
+              </div>
               <div className="suggestions">
                 {suggestions.map((s, i) => (
                   <button className="suggestion-btn" key={i} onClick={() => sendMessage(s)}>
