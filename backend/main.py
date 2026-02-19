@@ -42,10 +42,12 @@ def extract_code(text):
     if m: return m.group(1).strip()
     m = re.search(r"```\n(.*?)```", text, re.DOTALL)
     if m: return m.group(1).strip()
-    return text.strip()
+    return ""
 
 def safe_execute(code, df):
-    local_vars = {"df": df.copy(), "pd": pd, "px": px, "go": go, "result": None, "fig": None}
+    if not code.strip():
+        return None, None, None, None
+    local_vars = {"df": df.copy(), "pd": pd, "np": np, "px": px, "go": go, "result": None, "fig": None}
     try:
         exec(code, {"__builtins__": __builtins__}, local_vars)
     except Exception as e:
@@ -60,35 +62,59 @@ def safe_execute(code, df):
             pass
     table_data = None
     if isinstance(result, pd.DataFrame):
-        table_data = {"columns": list(result.columns), "rows": result.head(100).values.tolist()}
+        table_data = {"columns": list(result.columns), "rows": [[str(v) for v in row] for row in result.head(100).values.tolist()]}
         result = None
     elif isinstance(result, pd.Series):
-        table_data = {"columns": [result.name or "value"], "rows": [[v] for v in result.head(100).values.tolist()]}
+        table_data = {"columns": [str(result.name or "value"), "count"], "rows": [[str(k), str(v)] for k, v in result.head(100).items()]}
         result = None
     elif isinstance(result, (list, tuple)) and len(result) >= 2:
-        # Convert list with 2+ items to a table
         table_data = {"columns": ["value"], "rows": [[str(v)] for v in result[:100]]}
         result = None
     elif isinstance(result, dict) and len(result) >= 2:
-        # Convert dict with 2+ keys to a table
-        table_data = {"columns": ["column", "value"], "rows": [[str(k), str(v)] for k, v in list(result.items())[:100]]}
+        # Special case: column names + dtypes dict
+        if "column_names" in result and "column_dtypes" in result:
+            cols = result["column_names"]
+            dtypes = result["column_dtypes"]
+            table_data = {
+                "columns": ["Column Name", "Data Type"],
+                "rows": [[str(c), str(dtypes.get(c, "unknown")).replace("dtype(", "").replace(")", "").replace("'", "").replace("object", "text").replace("int64", "number").replace("float64", "decimal").replace("StringDtype(storage=python, na_value=nan)", "text")] for c in cols]
+            }
+        else:
+            table_data = {"columns": ["column", "value"], "rows": [[str(k), str(v)] for k, v in list(result.items())[:100]]}
         result = None
     return result, chart_json, table_data, None
 
+def is_conversational(question):
+    """Detect questions that don't need code — answer directly from metadata."""
+    q = question.lower().strip()
+    patterns = [
+        "what is this", "what's this", "whats this", "what is the file",
+        "tell me about", "describe this", "what does this", "overview",
+        "summarize", "what kind", "what type", "about this file",
+        "about this dataset", "about this data", "what are we looking at",
+    ]
+    return any(p in q for p in patterns)
+
+def is_simple_metadata(question, df):
+    """Answer simple row/column count questions directly without AI."""
+    q = question.lower().strip()
+    if any(w in q for w in ["how many rows", "number of rows", "row count", "how many records"]):
+        return f"Your dataset has {df.shape[0]:,} rows."
+    if any(w in q for w in ["how many columns", "number of columns", "column count", "how many fields"]):
+        return f"Your dataset has {df.shape[1]} columns."
+    if any(w in q for w in ["column names", "columns and", "what are the columns", "data types", "datatypes"]):
+        type_map = {"int64": "Number", "float64": "Decimal", "object": "Text", "bool": "Boolean", "datetime64[ns]": "Date"}
+        rows = [[col, type_map.get(str(df[col].dtype), "Text")] for col in df.columns]
+        return {"__table__": True, "columns": ["Column Name", "Data Type"], "rows": rows, "message": f"Your dataset has {df.shape[1]} columns:"}
+    return None
+
 def build_final_answer(explanation, result, question):
-    """
-    Build a clean final answer.
-    If result is a simple number, IGNORE the AI explanation entirely
-    and build a simple clean sentence using the real computed value.
-    """
     if result is None:
         return explanation
-
     if isinstance(result, (int, float, np.integer, np.floating)):
         result = float(result) if isinstance(result, (np.floating, float)) else int(result)
         formatted = f"{result:,}" if isinstance(result, int) else f"{result:,.2f}"
         q = question.lower()
-        # Build a natural answer based on the question type
         if any(w in q for w in ["how many rows", "row count", "number of rows"]):
             return f"Your dataset has {formatted} rows."
         elif any(w in q for w in ["how many columns", "column count", "number of columns"]):
@@ -105,24 +131,11 @@ def build_final_answer(explanation, result, question):
             return f"The total is {formatted}."
         else:
             return f"The answer is {formatted}."
-
-    # For dicts — handle specially
-    if isinstance(result, dict):
-        if 'column_names' in result:
-            cols = result['column_names']
-            dtypes = result.get('column_dtypes', {})
-            lines = ", ".join([f"{c} ({str(dtypes.get(c, 'unknown')).replace('dtype(', '').replace(')', '').replace(chr(39), '')})" for c in cols])
-            return f"Your dataset has {len(cols)} columns: {lines}"
-        return explanation
-
-    # For lists/arrays, show them cleanly
     if hasattr(result, "__iter__") and not isinstance(result, str):
         items = list(result)
         clean = ", ".join(str(i) for i in items)
         return f"The values are: {clean}"
-
-    # For strings
-    return f"{explanation} {result}"
+    return f"{explanation}\n\n{result}" if result else explanation
 
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
@@ -149,29 +162,63 @@ async def query(request: QueryRequest):
     summary = session["summary"]
     history = session["history"]
 
+    # Answer simple metadata questions directly — no AI needed
+    simple = is_simple_metadata(request.question, df)
+    if simple:
+        if isinstance(simple, dict) and simple.get("__table__"):
+            table_data = {"columns": simple["columns"], "rows": simple["rows"]}
+            answer = simple["message"]
+            session["history"].append({"role": "user", "content": request.question})
+            session["history"].append({"role": "assistant", "content": answer})
+            return QueryResponse(answer=answer, code="", table=table_data)
+        session["history"].append({"role": "user", "content": request.question})
+        session["history"].append({"role": "assistant", "content": simple})
+        return QueryResponse(answer=simple, code="")
+
+    # For conversational questions, skip code and answer directly
+    if is_conversational(request.question):
+        conversational_prompt = f"""The user uploaded a file called '{session["filename"]}' with this summary:
+{summary}
+
+The user asked: "{request.question}"
+
+Write a SHORT, FRIENDLY, plain English description of what this dataset is about. 
+- Mention the number of rows and columns
+- Mention what kind of data it contains based on the column names
+- Keep it to 3-4 sentences max
+- Do NOT use technical jargon or Python terms
+- Do NOT write any code"""
+        try:
+            response = client.models.generate_content(model="gemini-2.0-flash", contents=conversational_prompt)
+            answer = response.text.strip()
+        except Exception as e:
+            answer = f"This dataset has {df.shape[0]:,} rows and {df.shape[1]} columns with the following fields: {', '.join(df.columns.tolist())}."
+        session["history"].append({"role": "user", "content": request.question})
+        session["history"].append({"role": "assistant", "content": answer})
+        return QueryResponse(answer=answer, code="")
+
+    # For analytical questions, generate and run code
     system_prompt = f"""You are DataWhisper, an expert data analyst AI.
-Dataset summary:
+Dataset: '{session["filename"]}'
+Summary:
 {summary}
 
 Rules:
-- df is already loaded. Never reload it.
-- Use only pd, px, go. No matplotlib. No other imports.
-- Always assign the final computed answer to a variable called result. NEVER use print(). NEVER leave result as None.
-- For charts: assign to fig using px or go with template=plotly_dark and color_discrete_sequence=["#00e5ff"].
-- When creating bar charts, always use value_counts() for categorical columns.
+- df is already loaded. NEVER reload it.
+- Use only pd, np, px, go. No matplotlib. No other imports.
+- ALWAYS assign the final answer to result. NEVER use print(). NEVER leave result as None.
+- For charts: assign to fig using px or go with template=plotly_dark and color_discrete_sequence=["#6366f1"].
+- When making bar charts, use value_counts() for categorical columns.
 - Always wrap code in ```python``` blocks.
-- After the code block, write ONE short friendly sentence explaining what you calculated.
-- Do NOT include any numbers in your explanation. Just describe what was calculated, e.g. "I counted the unique values in the First Name column."
-- NEVER show Python objects like dtype(), Index() in your answer."""
+- After the code, write ONE sentence describing what you calculated. Do NOT include numbers — just describe the calculation.
+- Example good explanation: "I counted the number of unique values in the First Name column."
+- Example bad explanation: "There are 690 unique values." (never put numbers in explanation)"""
 
     conversation = "\n".join([f"{h['role']}: {h['content']}" for h in history[-4:]])
     full_prompt = f"{system_prompt}\n\nPrevious conversation:\n{conversation}\n\nuser: {request.question}"
 
     try:
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=full_prompt
-        )
+        response = client.models.generate_content(model="gemini-2.0-flash", contents=full_prompt)
         llm_response = response.text
     except Exception as e:
         print(f"REAL ERROR: {e}")
@@ -181,14 +228,12 @@ Rules:
     explanation = re.sub(r"```.*?```", "", llm_response, flags=re.DOTALL).strip() or "Here is the result."
     result, chart_json, table_data, exec_error = safe_execute(code, df)
 
-    # Save only clean explanation in history — no numbers to confuse future answers
     session["history"].append({"role": "user", "content": request.question})
     session["history"].append({"role": "assistant", "content": explanation})
 
     if exec_error:
         return QueryResponse(answer=explanation, code=code, error=f"Execution error: {exec_error}")
 
-    # If result was converted to a table or chart, say so simply
     if result is None and table_data is not None:
         answer = "Here's what I found:"
     elif result is None and chart_json is not None:
