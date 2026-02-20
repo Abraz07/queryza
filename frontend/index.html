@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>DataWhisper — Talk to Your Data</title>
+  <title>Queryza — Talk to Your Data</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
@@ -331,7 +331,7 @@
 <div id="root"></div>
 <script type="text/babel">
 const { useState, useRef, useEffect } = React;
-const API = "https://datawhisper-backend-e4lv.onrender.com";
+const API = "https://queryza.onrender.com";
 
 function PlotlyChart({ data, theme }) {
   const ref = useRef();
@@ -391,7 +391,7 @@ function Message({ msg, theme }) {
   const clean = (msg.content || '').replace(/Result: Index\(\[.*?\],\s*dtype='[^']*'\)/gs, '').replace(/Result: dtype\([^)]+\)/g, '').trim();
   return (
     <div className={`msg ${isUser ? 'user' : 'ai'}`}>
-      <div className="msg-avatar">{isUser ? '👤' : '🌊'}</div>
+      <div className="msg-avatar">{isUser ? '👤' : '⚡'}</div>
       <div className="msg-content">
         <div className="msg-bubble">{clean}</div>
         {msg.chart && <div className="chart-wrap"><PlotlyChart data={msg.chart} theme={theme} /></div>}
@@ -471,8 +471,8 @@ function App() {
     <>
       <header>
         <div className="logo">
-          <div className="logo-mark">🌊</div>
-          <div className="logo-name">Data<em>Whisper</em></div>
+          <div className="logo-mark">⚡</div>
+          <div className="logo-name">Query<em>za</em></div>
         </div>
         <div className="header-right">
           <div className="header-pill">Talk to your CSV / Excel</div>
@@ -553,7 +553,7 @@ function App() {
         <div className="chat-area">
           {!session ? (
             <div className="empty-state">
-              <div className="empty-orb">🌊</div>
+              <div className="empty-orb">⚡</div>
               <div className="empty-title">Ask your data<br/><span>anything</span></div>
               <div className="empty-sub">Upload a CSV or Excel file and start asking questions in plain English. No SQL. No formulas. Just ask.</div>
               <div className={`empty-upload ${dragOver ? 'drag-over' : ''}`}
@@ -575,7 +575,7 @@ function App() {
                 {messages.map((msg, i) => <Message key={i} msg={msg} theme={theme} />)}
                 {loading && (
                   <div className="msg ai">
-                    <div className="msg-avatar">🌊</div>
+                    <div className="msg-avatar">⚡</div>
                     <div className="msg-bubble"><div className="typing"><div className="typing-dot"/><div className="typing-dot"/><div className="typing-dot"/></div></div>
                   </div>
                 )}

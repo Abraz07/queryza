@@ -11,7 +11,7 @@ import plotly.utils
 
 client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
-app = FastAPI(title="DataWhisper API")
+app = FastAPI(title="Queryza API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 sessions = {}
