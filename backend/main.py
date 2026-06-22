@@ -1,5 +1,6 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import pandas as pd
 import numpy as np
@@ -23,7 +24,18 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    if isinstance(exc, HTTPException):
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    print(f"Unhandled error on {request.url.path}: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error. Please try a smaller file or a different sheet."},
+    )
 
 sessions = {}
 
@@ -63,19 +75,19 @@ def generate_suggestions(df):
         suggestions.append(f"Which columns have missing values?")
 
     if numeric:
-        suggestions.append(f"What is the average of '{numeric[0]}'?")
+        suggestions.append(f"What is the average of '{str(numeric[0])}'?")
         suggestions.append("Show me a summary of all numeric columns")
 
     for col in categorical:
         nunique = df[col].nunique(dropna=True)
         if 2 <= nunique <= 40:
-            suggestions.append(f"Show me a bar chart of '{col}'")
+            suggestions.append(f"Show me a bar chart of '{str(col)}'")
             break
 
     if datetime_cols:
-        suggestions.append(f"How does the data trend over '{datetime_cols[0]}'?")
+        suggestions.append(f"How does the data trend over '{str(datetime_cols[0])}'?")
     elif len(categorical) >= 2:
-        suggestions.append(f"Break down '{categorical[0]}' by '{categorical[1]}'")
+        suggestions.append(f"Break down '{str(categorical[0])}' by '{str(categorical[1])}'")
 
     seen = set()
     unique = []
@@ -103,6 +115,20 @@ def load_dataframe(contents: bytes, ext: str, sheet: str | None = None) -> pd.Da
         return pd.read_csv(buf)
     return pd.read_excel(buf, sheet_name=sheet or 0)
 
+def preview_records(df: pd.DataFrame) -> list[dict]:
+    preview = df.head(5).copy()
+    for col in preview.columns:
+        if pd.api.types.is_datetime64_any_dtype(preview[col]):
+            preview[col] = preview[col].astype(str)
+    records = preview.astype(object).where(pd.notnull(preview), None).to_dict(orient="records")
+    safe = []
+    for row in records:
+        safe.append({
+            k: (None if v is None else v.item() if hasattr(v, "item") else str(v) if not isinstance(v, (str, int, float, bool)) else v)
+            for k, v in row.items()
+        })
+    return safe
+
 def create_session(filename: str, df: pd.DataFrame, sheet: str | None = None):
     session_id = str(uuid.uuid4())
     display_name = f"{filename} ({sheet})" if sheet else filename
@@ -115,10 +141,10 @@ def create_session(filename: str, df: pd.DataFrame, sheet: str | None = None):
     return {
         "session_id": session_id,
         "filename": display_name,
-        "rows": df.shape[0],
-        "columns": df.shape[1],
-        "column_names": list(df.columns),
-        "preview": df.head(5).to_dict(orient="records"),
+        "rows": int(df.shape[0]),
+        "columns": int(df.shape[1]),
+        "column_names": [str(c) for c in df.columns],
+        "preview": preview_records(df),
         "suggestions": generate_suggestions(df),
         "sheet": sheet,
     }
@@ -308,26 +334,29 @@ async def upload_file(file: UploadFile = File(...), sheet: str | None = Form(Non
     ext = file.filename.rsplit(".", 1)[-1].lower()
     if ext not in ("csv", "xlsx", "xls"):
         raise HTTPException(status_code=400, detail="Only CSV/Excel supported.")
-    contents = await file.read()
-    if len(contents) > MAX_FILE_BYTES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"File too large ({len(contents) // (1024 * 1024)} MB). Maximum is {MAX_FILE_BYTES // (1024 * 1024)} MB.",
-        )
-    if ext in ("xlsx", "xls") and not sheet:
-        try:
-            excel = pd.ExcelFile(io.BytesIO(contents))
-            sheets = excel.sheet_names
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Could not read Excel file: {e}")
-        if len(sheets) > 1:
-            return {"needs_sheet": True, "sheets": sheets, "filename": file.filename}
     try:
+        contents = await file.read()
+        if len(contents) > MAX_FILE_BYTES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File too large ({len(contents) // (1024 * 1024)} MB). Maximum is {MAX_FILE_BYTES // (1024 * 1024)} MB.",
+            )
+        if ext in ("xlsx", "xls") and not sheet:
+            try:
+                excel = pd.ExcelFile(io.BytesIO(contents))
+                sheets = excel.sheet_names
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Could not read Excel file: {e}")
+            if len(sheets) > 1:
+                return {"needs_sheet": True, "sheets": sheets, "filename": file.filename}
         df = load_dataframe(contents, ext, sheet)
+        validate_dataframe(df)
+        return create_session(file.filename, df, sheet)
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Could not parse file: {e}")
-    validate_dataframe(df)
-    return create_session(file.filename, df, sheet)
+        print(f"Upload error: {e}")
+        raise HTTPException(status_code=400, detail=f"Could not process file: {e}")
 
 @app.delete("/session/{session_id}")
 async def clear_session(session_id: str):

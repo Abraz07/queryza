@@ -466,11 +466,13 @@ function App() {
 
   const uploadForm = async (form) => {
     const res = await fetch(`${API}/upload`, { method: 'POST', body: form });
+    let body;
+    try { body = await res.json(); } catch { body = {}; }
     if (!res.ok) {
-      const e = await res.json();
-      throw new Error(typeof e.detail === 'string' ? e.detail : 'Upload failed');
+      const detail = body.detail;
+      throw new Error(typeof detail === 'string' ? detail : 'Upload failed');
     }
-    return res.json();
+    return body;
   };
 
   const handleFile = async (file) => {
