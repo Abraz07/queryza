@@ -464,20 +464,24 @@ function App() {
     setSheetPicker(null);
   };
 
+  const uploadForm = async (form) => {
+    const res = await fetch(`${API}/upload`, { method: 'POST', body: form });
+    if (!res.ok) {
+      const e = await res.json();
+      throw new Error(typeof e.detail === 'string' ? e.detail : 'Upload failed');
+    }
+    return res.json();
+  };
+
   const handleFile = async (file) => {
     if (!file) return;
     setUploading(true);
     const form = new FormData();
     form.append('file', file);
     try {
-      const res = await fetch(`${API}/upload`, { method: 'POST', body: form });
-      if (!res.ok) {
-        const e = await res.json();
-        throw new Error(typeof e.detail === 'string' ? e.detail : 'Upload failed');
-      }
-      const data = await res.json();
+      const data = await uploadForm(form);
       if (data.needs_sheet) {
-        setSheetPicker({ pending_id: data.pending_id, sheets: data.sheets, filename: data.filename });
+        setSheetPicker({ file, sheets: data.sheets, filename: data.filename });
         return;
       }
       applySession(data);
@@ -486,19 +490,13 @@ function App() {
   };
 
   const selectSheet = async (sheet) => {
-    if (!sheetPicker) return;
+    if (!sheetPicker?.file) return;
     setUploading(true);
+    const form = new FormData();
+    form.append('file', sheetPicker.file);
+    form.append('sheet', sheet);
     try {
-      const res = await fetch(`${API}/upload/select-sheet`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pending_id: sheetPicker.pending_id, sheet }),
-      });
-      if (!res.ok) {
-        const e = await res.json();
-        throw new Error(typeof e.detail === 'string' ? e.detail : 'Could not load sheet');
-      }
-      applySession(await res.json());
+      applySession(await uploadForm(form));
     } catch (e) { alert('Upload failed: ' + e.message); }
     finally { setUploading(false); }
   };

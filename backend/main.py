@@ -17,18 +17,19 @@ MAX_COLUMNS = 500
 MAX_CODE_RETRIES = 2
 
 app = FastAPI(title="Queryza API")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 sessions = {}
-pending_uploads = {}
 
 class QueryRequest(BaseModel):
     session_id: str
     question: str
-
-class SelectSheetRequest(BaseModel):
-    pending_id: str
-    sheet: str
 
 class QueryResponse(BaseModel):
     answer: str
@@ -320,32 +321,13 @@ async def upload_file(file: UploadFile = File(...), sheet: str | None = Form(Non
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Could not read Excel file: {e}")
         if len(sheets) > 1:
-            pending_id = str(uuid.uuid4())
-            pending_uploads[pending_id] = {"contents": contents, "filename": file.filename, "ext": ext}
-            return {"needs_sheet": True, "pending_id": pending_id, "sheets": sheets, "filename": file.filename}
+            return {"needs_sheet": True, "sheets": sheets, "filename": file.filename}
     try:
         df = load_dataframe(contents, ext, sheet)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not parse file: {e}")
     validate_dataframe(df)
     return create_session(file.filename, df, sheet)
-
-@app.post("/upload/select-sheet")
-async def select_sheet(request: SelectSheetRequest):
-    pending = pending_uploads.pop(request.pending_id, None)
-    if not pending:
-        raise HTTPException(status_code=404, detail="Upload expired. Please upload the file again.")
-    try:
-        excel = pd.ExcelFile(io.BytesIO(pending["contents"]))
-        if request.sheet not in excel.sheet_names:
-            raise HTTPException(status_code=400, detail=f"Sheet '{request.sheet}' not found.")
-        df = load_dataframe(pending["contents"], pending["ext"], request.sheet)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Could not parse sheet: {e}")
-    validate_dataframe(df)
-    return create_session(pending["filename"], df, request.sheet)
 
 @app.delete("/session/{session_id}")
 async def clear_session(session_id: str):
