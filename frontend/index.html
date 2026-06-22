@@ -515,7 +515,19 @@ function App() {
         body: JSON.stringify({ session_id: session.session_id, question: q }),
       });
       const data = await res.json();
-      setMessages(prev => [...prev, { role: 'ai', content: data.answer, code: data.code, chart: data.chart, table: data.table, error: data.error }]);
+      if (!res.ok) {
+        const msg = typeof data.detail === 'string' ? data.detail : 'Something went wrong. Please try again.';
+        setMessages(prev => [...prev, { role: 'ai', content: msg, error: msg }]);
+        return;
+      }
+      setMessages(prev => [...prev, {
+        role: 'ai',
+        content: data.answer || data.error || 'No response.',
+        code: data.code,
+        chart: data.chart,
+        table: data.table,
+        error: data.error,
+      }]);
     } catch (e) {
       setMessages(prev => [...prev, { role: 'ai', content: 'Something went wrong. Please try again.', error: 'Failed to fetch' }]);
     } finally { setLoading(false); }

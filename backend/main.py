@@ -16,6 +16,7 @@ MAX_FILE_BYTES = 25 * 1024 * 1024
 MAX_ROWS = 100_000
 MAX_COLUMNS = 500
 MAX_CODE_RETRIES = 2
+LLM_MODELS = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.0-flash-lite"]
 
 app = FastAPI(title="Queryza API")
 app.add_middleware(
@@ -217,6 +218,56 @@ def is_simple_metadata(question, df):
         return {"__table__": True, "columns": ["Column Name", "Data Type"], "rows": rows, "message": f"Your dataset has {df.shape[1]} columns:"}
     return None
 
+def find_mentioned_column(question: str, df: pd.DataFrame):
+    for col in df.columns:
+        col_str = str(col)
+        if f"'{col_str}'" in question or f'"{col_str}"' in question or col_str in question:
+            return col
+        if col_str.lower() in question.lower():
+            return col
+    return None
+
+def numeric_summary_table(df: pd.DataFrame) -> dict:
+    numeric = df.select_dtypes(include="number")
+    desc = numeric.describe()
+    columns = ["Stat"] + [str(c) for c in desc.columns]
+    rows = []
+    for stat in desc.index:
+        rows.append([str(stat)] + [
+            f"{v:,.4f}" if pd.notna(v) and isinstance(v, (float, np.floating)) else str(v)
+            for v in desc.loc[stat]
+        ])
+    return {"columns": columns, "rows": rows}
+
+def try_analytical_fast_path(question: str, df: pd.DataFrame):
+    q = question.lower()
+    numeric = df.select_dtypes(include="number")
+
+    if ("summary" in q or "describe" in q) and ("numeric" in q or "number" in q or "decimal" in q):
+        if numeric.empty:
+            return "No numeric columns found in this dataset."
+        return {
+            "__table__": True,
+            **numeric_summary_table(df),
+            "message": "Summary of numeric columns:",
+        }
+
+    col = find_mentioned_column(question, df)
+    if col is not None and col in numeric.columns:
+        series = numeric[col]
+        if any(w in q for w in ["average", "mean"]):
+            return f"The average of '{col}' is {series.mean():,.4f}."
+        if any(w in q for w in ["sum", "total"]):
+            return f"The total of '{col}' is {series.sum():,.4f}."
+        if any(w in q for w in ["max", "maximum", "highest", "largest"]):
+            return f"The maximum of '{col}' is {series.max():,.4f}."
+        if any(w in q for w in ["min", "minimum", "lowest", "smallest"]):
+            return f"The minimum of '{col}' is {series.min():,.4f}."
+        if any(w in q for w in ["unique", "distinct", "count"]):
+            return f"'{col}' has {series.nunique():,} unique values."
+
+    return None
+
 def build_final_answer(explanation, result, question):
     if result is None:
         return explanation
@@ -246,12 +297,34 @@ def build_final_answer(explanation, result, question):
         return f"The values are: {clean}"
     return f"{explanation}\n\n{result}" if result else explanation
 
+def extract_llm_text(response) -> str:
+    try:
+        text = response.text
+        if text and text.strip():
+            return text.strip()
+    except (ValueError, AttributeError, TypeError):
+        pass
+    for candidate in getattr(response, "candidates", None) or []:
+        content = getattr(candidate, "content", None)
+        if not content:
+            continue
+        parts = getattr(content, "parts", None) or []
+        texts = [p.text for p in parts if getattr(p, "text", None)]
+        if texts:
+            return "\n".join(texts).strip()
+    raise ValueError("Model returned no text. Please try again.")
+
 def generate_llm_code(system_prompt: str, user_prompt: str) -> str:
-    response = client.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=f"{system_prompt}\n\n{user_prompt}",
-    )
-    return response.text
+    prompt = f"{system_prompt}\n\n{user_prompt}"
+    last_err = None
+    for model in LLM_MODELS:
+        try:
+            response = client.models.generate_content(model=model, contents=prompt)
+            return extract_llm_text(response)
+        except Exception as e:
+            last_err = e
+            print(f"LLM {model} failed: {e}")
+    raise HTTPException(status_code=500, detail=f"AI service unavailable: {last_err}")
 
 def run_analytical_query(session, question: str) -> QueryResponse:
     df = session["df"]
@@ -400,15 +473,33 @@ Write a SHORT, FRIENDLY, plain English description of what this dataset is about
 - Do NOT use technical jargon or Python terms
 - Do NOT write any code"""
         try:
-            response = client.models.generate_content(model="gemini-2.0-flash", contents=conversational_prompt)
-            answer = response.text.strip()
+            response = client.models.generate_content(model=LLM_MODELS[0], contents=conversational_prompt)
+            answer = extract_llm_text(response)
         except Exception as e:
-            answer = f"This dataset has {df.shape[0]:,} rows and {df.shape[1]} columns with the following fields: {', '.join(df.columns.tolist())}."
+            answer = f"This dataset has {df.shape[0]:,} rows and {df.shape[1]} columns with the following fields: {', '.join(str(c) for c in df.columns.tolist())}."
         session["history"].append({"role": "user", "content": request.question})
         session["history"].append({"role": "assistant", "content": answer})
         return QueryResponse(answer=answer, code="")
 
-    return run_analytical_query(session, request.question)
+    fast = try_analytical_fast_path(request.question, df)
+    if fast:
+        if isinstance(fast, dict) and fast.get("__table__"):
+            table_data = {"columns": fast["columns"], "rows": fast["rows"]}
+            answer = fast["message"]
+            session["history"].append({"role": "user", "content": request.question})
+            session["history"].append({"role": "assistant", "content": answer})
+            return QueryResponse(answer=answer, code="", table=table_data)
+        session["history"].append({"role": "user", "content": request.question})
+        session["history"].append({"role": "assistant", "content": fast})
+        return QueryResponse(answer=fast, code="")
+
+    try:
+        return run_analytical_query(session, request.question)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Query error: {e}")
+        raise HTTPException(status_code=500, detail=f"Query failed: {e}")
 
 @app.get("/health")
 async def health():
