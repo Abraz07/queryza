@@ -309,6 +309,33 @@
     /* Sidebar toggle mobile */
     .sidebar-toggle { display: none; }
 
+    /* Sheet picker modal */
+    .modal-overlay {
+      position: fixed; inset: 0; z-index: 200;
+      background: rgba(6, 8, 16, 0.75); backdrop-filter: blur(8px);
+      display: flex; align-items: center; justify-content: center; padding: 20px;
+    }
+    .modal-card {
+      background: var(--surface); border: 1px solid var(--border2);
+      border-radius: 16px; padding: 24px; width: 100%; max-width: 420px;
+      box-shadow: var(--card-shadow), var(--glow);
+    }
+    .modal-title { font-family: 'Outfit', sans-serif; font-size: 20px; font-weight: 800; margin-bottom: 6px; }
+    .modal-sub { font-size: 13px; color: var(--text2); margin-bottom: 18px; line-height: 1.5; }
+    .sheet-list { display: flex; flex-direction: column; gap: 8px; max-height: 280px; overflow-y: auto; }
+    .sheet-btn {
+      text-align: left; background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 10px; padding: 12px 14px; cursor: pointer; font-size: 13px;
+      color: var(--text); transition: all 0.2s; font-family: 'Space Grotesk', sans-serif;
+    }
+    .sheet-btn:hover { border-color: var(--accent); background: var(--accent-glow); }
+    .modal-cancel {
+      margin-top: 14px; width: 100%; padding: 10px; border-radius: 10px;
+      border: 1px solid var(--border); background: transparent; color: var(--text2);
+      cursor: pointer; font-size: 12px; font-family: 'JetBrains Mono', monospace;
+    }
+    .modal-cancel:hover { color: var(--text); border-color: var(--border2); }
+
     /* ---- MOBILE ---- */
     @media (max-width: 768px) {
       .header-pill { display: none; }
@@ -331,7 +358,17 @@
 <div id="root"></div>
 <script type="text/babel">
 const { useState, useRef, useEffect } = React;
-const API = "https://queryza.onrender.com";
+const API = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+  ? 'http://localhost:8000'
+  : 'https://queryza.onrender.com';
+
+const DEFAULT_SUGGESTIONS = [
+  'What are the column names and their data types?',
+  'How many rows are in this dataset?',
+  'How many columns are in this dataset?',
+  'Show me a summary of all numeric columns',
+  'Show me a bar chart of the data',
+];
 
 function PlotlyChart({ data, theme }) {
   const ref = useRef();
@@ -411,6 +448,7 @@ function App() {
   const [dragOver, setDragOver] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [theme, setTheme] = useState('dark');
+  const [sheetPicker, setSheetPicker] = useState(null);
   const messagesEnd = useRef();
   const textareaRef = useRef();
 
@@ -419,6 +457,13 @@ function App() {
 
   const toggleTheme = () => setTheme(t => t === 'dark' ? 'light' : 'dark');
 
+  const applySession = (data) => {
+    setSession(data);
+    setMessages([]);
+    setSidebarOpen(false);
+    setSheetPicker(null);
+  };
+
   const handleFile = async (file) => {
     if (!file) return;
     setUploading(true);
@@ -426,9 +471,34 @@ function App() {
     form.append('file', file);
     try {
       const res = await fetch(`${API}/upload`, { method: 'POST', body: form });
-      if (!res.ok) { const e = await res.json(); throw new Error(e.detail); }
+      if (!res.ok) {
+        const e = await res.json();
+        throw new Error(typeof e.detail === 'string' ? e.detail : 'Upload failed');
+      }
       const data = await res.json();
-      setSession(data); setMessages([]); setSidebarOpen(false);
+      if (data.needs_sheet) {
+        setSheetPicker({ pending_id: data.pending_id, sheets: data.sheets, filename: data.filename });
+        return;
+      }
+      applySession(data);
+    } catch (e) { alert('Upload failed: ' + e.message); }
+    finally { setUploading(false); }
+  };
+
+  const selectSheet = async (sheet) => {
+    if (!sheetPicker) return;
+    setUploading(true);
+    try {
+      const res = await fetch(`${API}/upload/select-sheet`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pending_id: sheetPicker.pending_id, sheet }),
+      });
+      if (!res.ok) {
+        const e = await res.json();
+        throw new Error(typeof e.detail === 'string' ? e.detail : 'Could not load sheet');
+      }
+      applySession(await res.json());
     } catch (e) { alert('Upload failed: ' + e.message); }
     finally { setUploading(false); }
   };
@@ -459,16 +529,28 @@ function App() {
   const onKeyDown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } };
   const onInputChange = (e) => { setInput(e.target.value); e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px'; };
 
-  const suggestions = [
-    'What are the column names and their data types?',
-    'How many rows are in this dataset?',
-    'How many columns are in this dataset?',
-    'Show me a summary of all numeric columns',
-    'Show me a bar chart of the data',
-  ];
+  const suggestions = session?.suggestions?.length ? session.suggestions : DEFAULT_SUGGESTIONS;
 
   return (
     <>
+      {sheetPicker && (
+        <div className="modal-overlay" onClick={() => !uploading && setSheetPicker(null)}>
+          <div className="modal-card" onClick={e => e.stopPropagation()}>
+            <div className="modal-title">Choose a sheet</div>
+            <div className="modal-sub">
+              <strong>{sheetPicker.filename}</strong> has {sheetPicker.sheets.length} sheets. Pick one to analyze.
+            </div>
+            <div className="sheet-list">
+              {sheetPicker.sheets.map(s => (
+                <button className="sheet-btn" key={s} onClick={() => selectSheet(s)} disabled={uploading}>
+                  {uploading ? '⏳ Loading...' : `📄 ${s}`}
+                </button>
+              ))}
+            </div>
+            <button className="modal-cancel" onClick={() => setSheetPicker(null)} disabled={uploading}>Cancel</button>
+          </div>
+        </div>
+      )}
       <header>
         <div className="logo">
           <div className="logo-mark">⚡</div>
@@ -501,7 +583,7 @@ function App() {
                 <input type="file" accept=".csv,.xlsx,.xls" onChange={e => handleFile(e.target.files[0])} />
                 <span className="upload-icon">{uploading ? '⏳' : '📊'}</span>
                 <div className="upload-title">{uploading ? 'Uploading...' : 'Drop your file here'}</div>
-                <div className="upload-sub">CSV, XLSX, XLS supported</div>
+                <div className="upload-sub">CSV, XLSX, XLS · max 25 MB</div>
               </div>
             ) : (
               <div className="file-info">
@@ -555,7 +637,7 @@ function App() {
             <div className="empty-state">
               <div className="empty-orb">⚡</div>
               <div className="empty-title">Ask your data<br/><span>anything</span></div>
-              <div className="empty-sub">Upload a CSV or Excel file and start asking questions in plain English. No SQL. No formulas. Just ask.</div>
+              <div className="empty-sub">Upload a CSV or Excel file (max 25 MB) and start asking questions in plain English. No SQL. No formulas. Just ask.</div>
               <div className={`empty-upload ${dragOver ? 'drag-over' : ''}`}
                 onDragOver={e => { e.preventDefault(); setDragOver(true); }}
                 onDragLeave={() => setDragOver(false)}
@@ -568,8 +650,19 @@ function App() {
             <>
               <div className="messages">
                 {messages.length === 0 && (
-                  <div style={{textAlign:'center', color:'var(--text3)', fontSize:13, padding:'48px 0', fontFamily:'JetBrains Mono, monospace'}}>
+                  <div style={{textAlign:'center', color:'var(--text3)', fontSize:13, padding:'32px 0', fontFamily:'JetBrains Mono, monospace'}}>
                     ✓ file loaded — ask your first question
+                    {suggestions.length > 0 && (
+                      <div style={{marginTop:20, display:'flex', flexWrap:'wrap', gap:8, justifyContent:'center', maxWidth:560, margin:'20px auto 0'}}>
+                        {suggestions.slice(0, 3).map((s, i) => (
+                          <button key={i} onClick={() => sendMessage(s)} style={{
+                            background:'var(--surface2)', border:'1px solid var(--border2)', borderRadius:20,
+                            padding:'8px 14px', fontSize:12, color:'var(--text2)', cursor:'pointer',
+                            fontFamily:'Space Grotesk, sans-serif', transition:'all 0.2s'
+                          }}>{s}</button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
                 {messages.map((msg, i) => <Message key={i} msg={msg} theme={theme} />)}
